@@ -38,6 +38,14 @@ void Image::setImage(const cv::Mat &img) {
     img_ = img;
 }
 
+Image Image::copy() const {
+    Image tmp;
+    tmp.img_ = img_.clone();
+    tmp.name_ = name_;
+    tmp.ext_ = ext_;
+    return tmp;
+}
+
 void Image::show(bool pause, bool destroy) {
     if (img_.empty()) {
         cerr << "Image " << name_ << " is empty" << endl;
@@ -46,8 +54,10 @@ void Image::show(bool pause, bool destroy) {
 
     cv::namedWindow(name_, cv::WINDOW_AUTOSIZE);
     cv::imshow(name_, img_);
-    if (pause)
-        cv::waitKey(0);
+    if (pause) {
+        // continue until esc key is pressed
+        while (cv::waitKey(0) != 27);
+    }
     if (destroy)
         cv::destroyWindow(name_);
 }
@@ -57,7 +67,7 @@ Images::~Images() {
 }
 
 void Images::addImage(const Image &img) {
-    if (img.getCVImage().empty()) {
+    if (img.empty()) {
         cerr << "Input image " << img.getName() << img.getExtension() << " to Images " << name_ << " is empty" << endl;
         return;
     }

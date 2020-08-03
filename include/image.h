@@ -8,7 +8,6 @@
 
 #include <iostream>
 #include <opencv2/highgui.hpp>
-#include <boost/optional.hpp>
 
 class Image{
 public:
@@ -24,6 +23,11 @@ public:
     inline cv::Mat getCVImage() const {return img_;}
     inline cv::Mat &getCVImage() {return img_;}
 
+    Image copy() const;
+    inline bool empty() const {return img_.empty();}
+    inline int height() const {return img_.rows;}
+    inline int width() const {return img_.cols;}
+    inline int channels() const {return img_.channels();}
     void show(bool pause = true, bool destroy = true);
 
 private:
