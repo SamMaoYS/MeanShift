@@ -45,6 +45,7 @@ void MeanShift::filter() {
         return;
 
     filterRGB();
+    cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
 }
 
 int MeanShift::configure() {
@@ -148,18 +149,18 @@ void MeanShift::filterRGB() {
                         }
                     }
                 }
-                if (c1 < std::numeric_limits<float>::min() || c2 == std::numeric_limits<float>::min()) {
+                if (c1 <= std::numeric_limits<float>::min() || c2 <= std::numeric_limits<float>::min()) {
                     iter++;
                     continue;
                 }
 
-                x_new = x_new / (int)c1;
-                y_new = y_new / (int)c1;
-                l_new = l_new / (float)c2;
-                u_new = u_new / (float)c2;
-                v_new = v_new / (float)c2;
-                float dx = (float)(x_new - x_old);
-                float dy = (float)(y_new - y_old);
+                x_new = x_new / c1;
+                y_new = y_new / c1;
+                l_new = l_new / c2;
+                u_new = u_new / c2;
+                v_new = v_new / c2;
+                float dx = x_new - x_old;
+                float dy = y_new - y_old;
                 float dl = l_new - l_old;
                 float du = u_new - u_old;
                 float dv = v_new - v_old;
