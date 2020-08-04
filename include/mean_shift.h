@@ -19,13 +19,17 @@ public:
     void setImage(const Image& img);
     void setSpatialBandwidth(float hs);
     void setRangeBandwidth(float hr);
+
+    Image getFilteredImage() const;
 protected:
     enum Status{SUCCESS, FAIL_IMAGE, FAIL_HS, FAIL_HR};
     int configure();
+    void filterRGB();
 
 private:
     // copy of input image
     Image image_;
+    Image filtered_;
 
     // bandwidths
     // spatial bandwidth
