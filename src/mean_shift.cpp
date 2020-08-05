@@ -61,7 +61,9 @@ typedef AdjNodesImpl AdjNodes;
 MeanShift::MeanShift() {
     this->setSpatialBandwidth(8);
     this->setRangeBandwidth(8);
-    this->setMinSize(20);
+    this->setMinSize(100);
+    this->setIterationThresholds(100, 1);
+    this->setMergeMaxAdjacent(10);
 }
 
 MeanShift::MeanShift(const Image &img, float hs, float hr, int min_size) {
@@ -69,10 +71,20 @@ MeanShift::MeanShift(const Image &img, float hs, float hr, int min_size) {
     this->setSpatialBandwidth(hs);
     this->setRangeBandwidth(hr);
     this->setMinSize(min_size);
+    this->setIterationThresholds(100, 1);
+    this->setMergeMaxAdjacent(10);
 }
 
 MeanShift::~MeanShift() {
+    l_filtered_.release();
+    u_filtered_.release();
+    v_filtered_.release();
 
+    modes_range_.clear();
+    modes_pos_.clear();
+    modes_size_.clear();
+
+    labels_.release();
 }
 
 void MeanShift::setImage(const Image &img) {
@@ -114,7 +126,7 @@ void MeanShift::filter() {
         return;
 
     filterRGB();
-    cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
+    cout << "Filter process ends" << endl;
 }
 
 void MeanShift::segment() {
@@ -125,12 +137,14 @@ void MeanShift::segment() {
 
     if (filtered_.empty()) {
         filterRGB();
-        cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
+        cout << "Filter process ends" << endl;
     }
 
     cluster();
     merge();
-    genSegmentedImage();
+    modes_range_.resize(num_segms_);
+    modes_pos_.resize(num_segms_);
+    modes_size_.resize(num_segms_);
 }
 
 int MeanShift::configure() {
@@ -197,7 +211,7 @@ void MeanShift::filterRGB() {
             float shift = FLT_MAX;
 
             int iter = 0;
-            while (iter < 10 && shift > 3) {
+            while (iter < max_iter_ && shift > min_shift_) {
                 x_new = 0;
                 y_new = 0;
                 l_new = 0;
@@ -366,17 +380,9 @@ float MeanShift::dist3D2(const cv::Point3f &x, const cv::Point3f &y) {
 }
 
 Image MeanShift::getSegmentedImage() const {
-    if (segmented_.empty()) {
-        cerr << "Segmented image is not generated, please run segment first" << endl;
-        return Image();
-    }
-    return segmented_;
-}
-
-void MeanShift::genSegmentedImage() {
     int height = image_.height();
     int width = image_.width();
-    cv::Mat segmented = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
+    cv::Mat segmented_cv = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
 
 #pragma omp parallel for collapse(2)
     for (int i = 0; i < height; ++i) {
@@ -386,17 +392,17 @@ void MeanShift::genSegmentedImage() {
             luv_8U[0] = (uchar)luv.x;
             luv_8U[1] = (uchar)luv.y;
             luv_8U[2] = (uchar)luv.z;
-            segmented.at<cv::Vec3b>(i,j) = luv_8U;
+            segmented_cv.at<cv::Vec3b>(i,j) = luv_8U;
         }
     }
 
-    cv::cvtColor(segmented, segmented, cv::COLOR_Luv2BGR);
+    cv::cvtColor(segmented_cv, segmented_cv, cv::COLOR_Luv2BGR);
     if (image_.channels() == 1)
-        cv::cvtColor(segmented, segmented, cv::COLOR_BGR2GRAY);
-    segmented_.setImage(segmented);
-    segmented_.setName(image_.getName() + "_segmented");
-    cout << "Segmented image " << segmented_.getName() << segmented_.getExtension() << " was generated" << endl;
-    segmented.release();
+        cv::cvtColor(segmented_cv, segmented_cv, cv::COLOR_BGR2GRAY);
+    Image segmented(segmented_cv, image_.getName() + "_segmented");
+    segmented_cv.release();
+
+    return segmented;
 }
 
 cv::Vec3b MeanShift::randomColor() const{
@@ -425,6 +431,7 @@ Image MeanShift::getRandomColorImage() const {
     }
 
     Image random(cv_random, image_.getName() + "_random_color");
+    cv_random.release();
     return random;
 }
 
@@ -445,7 +452,7 @@ void MeanShift::initMerge(T *&adj_nodes, T *&adj_pool) {
     int width = image_.width();
 
     adj_nodes = new AdjNodes[num_segms_];
-    int adj_pool_size = num_segms_*10;
+    int adj_pool_size = num_segms_*max_adj_;
     adj_pool = new AdjNodes[adj_pool_size];
 
 #pragma omp parallel for
@@ -466,6 +473,7 @@ void MeanShift::initMerge(T *&adj_nodes, T *&adj_pool) {
         node1 = free_nodes;
         if (node1 == nullptr) return;
         node2 = free_nodes->next;
+        if (node2 == nullptr) return;
         free_nodes_old = free_nodes;
         free_nodes = free_nodes->next->next;
         node1->label = labels_ptr[idx1];
@@ -626,6 +634,65 @@ void MeanShift::reLabel(T *adj_nodes) {
     delete [] modes_pos_buffer;
     delete [] modes_size_buffer;
     delete [] labels_buffer;
+}
+
+Images MeanShift::getResultImages(uint8_t code) const {
+    Images results(image_.getName() + "_results");
+    if (code & OUT_FILTER) {
+        results.addImage(getFilteredImage());
+    }
+    if (code & OUT_SEGM) {
+        results.addImage(getSegmentedImage());
+    }
+    if (code & OUT_RANDOM) {
+        results.addImage(getRandomColorImage());
+    }
+    if (code & OUT_MASK) {
+        results.addImages(getMaskImages());
+    }
+    return results;
+}
+
+Images MeanShift::getMaskImages() const {
+    Images masks(image_.getName() + "masks");
+    int height = image_.height();
+    int width = image_.width();
+
+#pragma omp parallel for
+    for (int i = 0; i < num_segms_; ++i) {
+        cv::Mat mask(height, width, CV_8U, cv::Scalar::all(0));
+        mask.setTo(0, labels_ != i);
+        mask.setTo(255, labels_ == i);
+#pragma omp critical
+        masks.addImage(Image(mask, image_.getName()+"_mask" + to_string(i)));
+    }
+    return masks;
+}
+
+void MeanShift::setIterationThresholds(int max_iter, float min_shift) {
+    if (max_iter <= 0 || min_shift <= 0) {
+        cerr << "Input iteration thresholds should be positive" << endl;
+        return;
+    }
+    if (max_iter > 200) {
+        cerr << "Maximum iteration is too large, could cause process running very slow" << endl;
+        return;
+    }
+
+    max_iter_ = max_iter;
+    min_shift_ = min_shift;
+}
+
+void MeanShift::setMergeMaxAdjacent(int max_adj) {
+    if (max_adj <= 0) {
+        cerr << "Input merge maximum number of adjacent segments should be positive" << endl;
+        return;
+    }
+    if (max_adj > 30) {
+        cerr << "Input merge maximum number of adjacent segments is too large, could cause memory allocation failure" << endl;
+        return;
+    }
+    max_adj_ = max_adj;
 }
 
 

@@ -22,9 +22,11 @@ public:
     void setRangeBandwidth(float hr);
     void setMinSize(int min_size);
 
-    Image getFilteredImage() const;
-    Image getSegmentedImage() const;
-    Image getRandomColorImage() const;
+    void setIterationThresholds(int max_iter, float min_shift);
+    void setMergeMaxAdjacent(int max_adj);
+
+    enum Output{OUT_FILTER = 1u << 0u, OUT_SEGM = 1u << 1u, OUT_RANDOM = 1u << 2u, OUT_MASK = 1u << 3u};
+    Images getResultImages(uint8_t code) const;
     inline int getNumSegments() const {return num_segms_;}
 protected:
     enum Status{SUCCESS, FAIL_IMAGE, FAIL_HS, FAIL_HR, FAIL_MIN_SIZE};
@@ -35,7 +37,11 @@ protected:
     void mergeRange();
     void mergeMinSize();
 
-    void genSegmentedImage();
+    Image getFilteredImage() const;
+    Image getSegmentedImage() const;
+    Image getRandomColorImage() const;
+    Images getMaskImages() const;
+
     float dist3D2(const cv::Point3f &x, const cv::Point3f &y);
     cv::Vec3b randomColor() const;
 
@@ -51,7 +57,6 @@ private:
     // copy of input image
     Image image_;
     Image filtered_;
-    Image segmented_;
 
     // bandwidths
     // spatial bandwidth
@@ -59,6 +64,10 @@ private:
     // range bandwidth
     float hr_;
     int min_size_;
+
+    int max_iter_;
+    float min_shift_;
+    int max_adj_;
 
     cv::Mat l_filtered_;
     cv::Mat u_filtered_;

@@ -89,3 +89,7 @@ Image Images::at(unsigned int idx) const {
     }
     return images_[idx];
 }
+
+void Images::addImages(const Images &imgs) {
+    images_.insert(images_.end(), imgs.images_.begin(), imgs.images_.end());
+}

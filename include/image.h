@@ -9,6 +9,11 @@
 #include <iostream>
 #include <opencv2/highgui.hpp>
 
+namespace win {
+    inline void destroyAllWindows() {cv::destroyAllWindows();}
+    inline void waitKey(int key = 0) {cv::waitKey(key);}
+}
+
 class Image{
 public:
     Image();
@@ -28,7 +33,7 @@ public:
     inline int height() const {return img_.rows;}
     inline int width() const {return img_.cols;}
     inline int channels() const {return img_.channels();}
-    void show(bool pause = true, bool destroy = true);
+    void show(bool pause = true, bool destroy = false);
 
 private:
     cv::Mat img_;
@@ -42,6 +47,7 @@ public:
     ~Images();
 
     void addImage(const Image &img);
+    void addImages(const Images &imgs);
     Image at(unsigned int idx = 0) const;
 
     void setName(const std::string &name);
