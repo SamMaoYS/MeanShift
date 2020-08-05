@@ -108,7 +108,7 @@ void MeanShift::setRangeBandwidth(float hr) {
         cerr << "Input range bandwidth should be positive" << endl;
         return;
     }
-    hr_ = hr;
+    hr_ = sqrt(3)*hr;
 }
 
 void MeanShift::setMinSize(int min_size) {
@@ -188,66 +188,46 @@ void MeanShift::filterRGB() {
     v_filtered_.create(height, width, CV_8U);
 
     int rad_s2 = (int)(hs_*hs_);
-    float rad_r2 = 3*hr_*hr_;
+    float rad_r2 = hr_*hr_;
 
     uchar * l_ptr = luv[0].ptr();
     uchar * u_ptr = luv[1].ptr();
     uchar * v_ptr = luv[2].ptr();
 
+    cv::Mat hs_kernel = gaussianKernel((int)(2*hs_+1));
+    cv::Mat hr_kernel = gaussianKernel((int)(2*hr_+1));
+
 #pragma omp parallel for collapse(2)
     for (int i = 0; i < height; ++i) {
         for (int j = 0; j < width; ++j) {
             int pt_idx = i*width+j;
-            int x_old = j;
-            int y_old = i;
-            float l_old = (float)l_ptr[pt_idx];
-            float u_old = (float)u_ptr[pt_idx];
-            float v_old = (float)v_ptr[pt_idx];
-            int x_new = 0;
-            int y_new = 0;
-            float l_new = 0;
-            float u_new = 0;
-            float v_new = 0;
+            cv::Point2f xy_old(j, i);
+            cv::Point3f luv_old((float)l_ptr[pt_idx], (float)u_ptr[pt_idx], (float)v_ptr[pt_idx]);
+            cv::Point2f xy_new(0);
+            cv::Point3f luv_new(0);
             float shift = FLT_MAX;
 
             int iter = 0;
             while (iter < max_iter_ && shift > min_shift_) {
-                x_new = 0;
-                y_new = 0;
-                l_new = 0;
-                u_new = 0;
-                v_new = 0;
+                xy_new = cv::Point2f(0);
+                luv_new= cv::Point3f(0);
                 float c1 = 0;
                 float c2 = 0;
 
                 int x_start = max(0, j-(int)hs_);
                 int x_end = min(width, j+(int)hs_+1);
-                int x_center = (x_start + x_end)/2;
                 int y_start = max(0, i-(int)hs_);
                 int y_end = min(height, i+(int)hs_+1);
-                int y_center = (y_start + y_end)/2;
                 for (int y = y_start; y < y_end; ++y) {
                     for (int x = x_start; x < x_end; ++x) {
                         int pt_win_idx = y*width+x;
-                        float l_val = (float)l_ptr[pt_win_idx];
-                        float u_val = (float)u_ptr[pt_win_idx];
-                        float v_val = (float)v_ptr[pt_win_idx];
-                        float dl = l_old - l_val;
-                        float du = u_old - u_val;
-                        float dv = v_old - v_val;
-
-                        int dx = x - x_center;
-                        int dy = y - y_center;
-                        int ds = dx*dx + dy*dy;
-                        float dr = dl*dl + du*du + dv*dv;
+                        cv::Point3f luv_win(l_ptr[pt_win_idx], u_ptr[pt_win_idx], v_ptr[pt_win_idx]);
+                        float dr = dist3D2(luv_win, luv_old);
                         if (dr <= rad_r2) {
-                            float g1 = (float)std::exp(-(float)ds/(2.0*rad_s2));
-                            float g2 = (float)std::exp(-(float)dr/(2.0*rad_r2));
-                            x_new += (int)(g1*x);
-                            y_new += (int)(g1*y);
-                            l_new += g2*l_val;
-                            u_new += g2*u_val;
-                            v_new += g2*v_val;
+                            float g1 = hs_kernel.at<float>(x-x_start, y-y_start);
+                            float g2 = hr_kernel.at<float>(sqrt(dr), sqrt(dr));
+                            xy_new += g1*cv::Point2f(x, y);
+                            luv_new += g2*luv_win;
                             c1 += g1;
                             c2 += g2;
                         }
@@ -257,28 +237,18 @@ void MeanShift::filterRGB() {
                     iter++;
                     continue;
                 }
-
-                x_new = x_new / c1;
-                y_new = y_new / c1;
-                l_new = l_new / c2;
-                u_new = u_new / c2;
-                v_new = v_new / c2;
-                float dx = x_new - x_old;
-                float dy = y_new - y_old;
-                float dl = l_new - l_old;
-                float du = u_new - u_old;
-                float dv = v_new - v_old;
-                shift = dx*dx + dy*dy + dl*dl + du*du + dv*dv;
-                x_old = x_new;
-                y_old = y_new;
-                l_old = l_new;
-                u_old = u_new;
-                v_old = v_new;
+                xy_new /= c1;
+                luv_new /= c2;
+                cv::Point2f d_xy = xy_new - xy_old;
+                cv::Point3f d_luv = luv_new - luv_old;
+                shift = d_xy.dot(d_xy)+d_luv.dot(d_luv);
+                xy_old = xy_new;
+                luv_old = luv_new;
                 iter++;
             }
-            l_filtered_.ptr<uchar>()[pt_idx] = (uchar)l_old;
-            u_filtered_.ptr<uchar>()[pt_idx] = (uchar)u_old;
-            v_filtered_.ptr<uchar>()[pt_idx] = (uchar)v_old;
+            l_filtered_.ptr<uchar>()[pt_idx] = (uchar)luv_old.x;
+            u_filtered_.ptr<uchar>()[pt_idx] = (uchar)luv_old.y;
+            v_filtered_.ptr<uchar>()[pt_idx] = (uchar)luv_old.z;
         }
     }
     luv.clear();
@@ -312,7 +282,7 @@ void MeanShift::cluster() {
     num_segms_ = 0;
     int l_idx = -1;
 
-    float rad_r2 = 3*hr_*hr_;
+    float rad_r2 = hr_*hr_;
 
     cv::Mat real_l = l_filtered_.clone();
     real_l.convertTo(real_l, CV_32F);
@@ -498,7 +468,7 @@ void MeanShift::initMerge(T *&adj_nodes, T *&adj_pool) {
 }
 
 void MeanShift::mergeRange() {
-    float rad_r2 = 3*hr_*hr_;
+    float rad_r2 = hr_*hr_;
 
     int num_segms_old = num_segms_;
     for (int iter = 0, delta = 1; iter < 5 && delta > 0; ++iter) {
@@ -693,6 +663,30 @@ void MeanShift::setMergeMaxAdjacent(int max_adj) {
         return;
     }
     max_adj_ = max_adj;
+}
+
+cv::Mat MeanShift::gaussianKernel(int size) {
+    if (size%2 == 0)
+        size+= 1;
+
+    cv::Mat1i x_idx, y_idx;
+    int half_size = (size-1)/2;
+    if (half_size == 0)
+        return cv::Mat(1,1, CV_32F, cv::Scalar(1));
+    utils::meshGrid(cv::Range(-half_size, half_size), cv::Range(-half_size, half_size), x_idx, y_idx);
+
+    x_idx = x_idx.mul(x_idx);
+    y_idx = y_idx.mul(y_idx);
+    cv::Mat fx_idx, fy_idx;
+    x_idx.convertTo(fx_idx, CV_32F);
+    y_idx.convertTo(fy_idx, CV_32F);
+    int size2 = size*size;
+    cv::Mat kernel;
+    kernel = (fx_idx+fy_idx) / (2.0*(float)size2);
+    cv::exp(-kernel, kernel);
+    kernel = kernel/cv::sum(kernel);
+
+    return kernel;
 }
 
 

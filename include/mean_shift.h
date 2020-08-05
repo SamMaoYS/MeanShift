@@ -37,6 +37,8 @@ protected:
     void mergeRange();
     void mergeMinSize();
 
+    cv::Mat gaussianKernel(int size);
+
     Image getFilteredImage() const;
     Image getSegmentedImage() const;
     Image getRandomColorImage() const;
