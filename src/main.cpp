@@ -4,13 +4,18 @@
 int main(int argc, char** argv) {
     Images images("images_0");
     io::loadMultiImages("../data/", images, -1);
-    
-    Image baboon = images.at(0);
-    baboon.show();
 
-    MeanShift mean_shift(baboon, 8, 16);
-    mean_shift.filter();
+    for (int i = 0; i < images.size(); ++i) {
+        Image img = images.at(i);
+        img.show(true, false);
 
-    Image filtered = mean_shift.getFilteredImage();
-    filtered.show();
+        MeanShift mean_shift(img, 8, 16);
+        mean_shift.segment();
+
+        std::cout << "Num Segments: " << mean_shift.getNumSegments() << std::endl;
+
+        Image filtered = mean_shift.getSegmentedImage();
+        filtered.show(true, false);
+        cv::destroyAllWindows();
+    }
 }

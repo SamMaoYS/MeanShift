@@ -35,7 +35,7 @@ void Image::setImage(const cv::Mat &img) {
         cerr << "Input image is empty" << endl;
         return;
     }
-    img_ = img;
+    img_ = img.clone();
 }
 
 Image Image::copy() const {

@@ -5,6 +5,7 @@
 #include "mean_shift.h"
 #include "utils.h"
 #include <opencv2/imgproc.hpp>
+#include <stack>
 
 using namespace std;
 
@@ -48,6 +49,44 @@ void MeanShift::filter() {
     cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
 }
 
+void MeanShift::segment(float thresh_r) {
+    utils::processPrint("Mean Shift Segment Starts");
+
+    if (configure() != SUCCESS)
+        return;
+
+    if (filtered_.empty()) {
+        filterRGB();
+    }
+
+    if (isnan(thresh_r))
+        thresh_r = hr_;
+
+    cluster(thresh_r);
+    cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
+
+    int height = labels_.rows;
+    int width = labels_.cols;
+    cv::Mat segmented = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            cv::Point3f luv= modes_range_[labels_.at<int>(i,j)];
+            cv::Vec3b luv_8U;
+            luv_8U[0] = (uchar)luv.x;
+            luv_8U[1] = (uchar)luv.y;
+            luv_8U[2] = (uchar)luv.z;
+            segmented.at<cv::Vec3b>(i,j) = luv_8U;
+        }
+    }
+    cv::cvtColor(segmented, segmented, cv::COLOR_Luv2BGR);
+    if (image_.channels() == 1)
+        cv::cvtColor(segmented, segmented, cv::COLOR_BGR2GRAY);
+    segmented_.setImage(segmented);
+    segmented_.setName(image_.getName() + "_segmented");
+    cout << "Segmented image " << segmented_.getName() << segmented_.getExtension() << " was generated" << endl;
+    segmented.release();
+}
+
 int MeanShift::configure() {
     if (image_.empty()) {
         cerr << "Input image " << image_.getName() << " is empty" << endl;
@@ -76,13 +115,13 @@ void MeanShift::filterRGB() {
         cv::cvtColor(range, range, cv::COLOR_GRAY2BGR);
     }
     cv::cvtColor(range, range, cv::COLOR_BGR2Luv);
-    vector<cv::Mat> luv;
+    std::vector<cv::Mat> luv;
     cv::split(range, luv);
+    range.release();
 
-    cv::Mat l_filter, u_filter, v_filter;
-    l_filter = cv::Mat(height, width, CV_8U);
-    u_filter = cv::Mat(height, width, CV_8U);
-    v_filter = cv::Mat(height, width, CV_8U);
+    l_filtered_.create(height, width, CV_8U);
+    u_filtered_.create(height, width, CV_8U);
+    v_filtered_.create(height, width, CV_8U);
 
     int rad_s2 = (int)(hs_*hs_);
     float rad_r2 = 3*hr_*hr_;
@@ -107,7 +146,7 @@ void MeanShift::filterRGB() {
             float shift = FLT_MAX;
 
             int iter = 0;
-            while (iter < 100 && shift > 1) {
+            while (iter < 10 && shift > 3) {
                 x_new = 0;
                 y_new = 0;
                 l_new = 0;
@@ -172,22 +211,25 @@ void MeanShift::filterRGB() {
                 v_old = v_new;
                 iter++;
             }
-            l_filter.ptr<uchar>()[pt_idx] = (uchar)l_old;
-            u_filter.ptr<uchar>()[pt_idx] = (uchar)u_old;
-            v_filter.ptr<uchar>()[pt_idx] = (uchar)v_old;
+            l_filtered_.ptr<uchar>()[pt_idx] = (uchar)l_old;
+            u_filtered_.ptr<uchar>()[pt_idx] = (uchar)u_old;
+            v_filtered_.ptr<uchar>()[pt_idx] = (uchar)v_old;
         }
     }
+    luv.clear();
 
     cv::Mat tmp1;
     vector<cv::Mat> result;
-    result.push_back(l_filter);
-    result.push_back(u_filter);
-    result.push_back(v_filter);
+    result.emplace_back(l_filtered_);
+    result.emplace_back(u_filtered_);
+    result.emplace_back(v_filtered_);
     cv::merge(result, tmp1);
     cv::cvtColor(tmp1, tmp1, cv::COLOR_Luv2BGR);
 
     filtered_.setImage(tmp1);
     filtered_.setName(image_.getName()+"_filtered");
+    tmp1.release();
+    result.clear();
 }
 
 Image MeanShift::getFilteredImage() const {
@@ -197,3 +239,111 @@ Image MeanShift::getFilteredImage() const {
     }
     return filtered_;
 }
+
+void MeanShift::cluster(float thresh_r) {
+    int height = image_.height();
+    int width = image_.width();
+
+    num_segms_ = 0;
+    int l_idx = -1;
+
+    float rad_r2 = 3*thresh_r*thresh_r;
+
+    cv::Mat real_l = l_filtered_.clone();
+    real_l.convertTo(real_l, CV_32F);
+    cv::Mat real_u = u_filtered_.clone();
+    real_u.convertTo(real_u, CV_32F);
+    cv::Mat real_v = v_filtered_.clone();
+    real_v.convertTo(real_v, CV_32F);
+
+    float * l_ptr = real_l.ptr<float>();
+    float * u_ptr = real_u.ptr<float>();
+    float * v_ptr = real_v.ptr<float>();
+
+    const cv::Point2i eight_connect[8] = {cv::Point2i(-1, -1), cv::Point2i(-1, 0), cv::Point2i(-1, 1), cv::Point2i(0, -1), cv::Point2i(0, 1), cv::Point2i(1, -1), cv::Point2i(1, 0), cv::Point2i(1, 1)};
+
+    labels_ = cv::Mat(height, width, CV_32S, cv::Scalar::all(-1));
+    int* labels_ptr = labels_.ptr<int>();
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            int pt_idx = i*width+j;
+
+            if (labels_ptr[pt_idx] < 0) {
+                labels_ptr[pt_idx] = ++l_idx;
+
+                cv::Point2i  ref_pt(i, j);
+                cv::Point3f pt_luv(l_ptr[pt_idx], u_ptr[pt_idx], v_ptr[pt_idx]);
+                modes_range_.emplace_back(pt_luv);
+                modes_pos_.emplace_back(ref_pt);
+                modes_size_.push_back(1);
+
+                vector<cv::Point2i> neighbors;
+                neighbors.emplace_back(ref_pt);
+
+                while (!neighbors.empty()) {
+                    cv::Point2i cur_pt = neighbors.back();
+                    neighbors.pop_back();
+
+                    for (int k = 0; k < 8; ++k) {
+                        cv::Point2i ne_pt = cur_pt + eight_connect[k];
+                        if (ne_pt.x >= 0 && ne_pt.y >= 0 && ne_pt.x < height && ne_pt.y < width) {
+                            int ne_pt_idx = ne_pt.x*width + ne_pt.y;
+                            cv::Point3f ne_pt_luv(l_ptr[ne_pt_idx], u_ptr[ne_pt_idx], v_ptr[ne_pt_idx]);
+                            float dr2 = dist3D2(pt_luv, ne_pt_luv);
+                            if (dr2 < rad_r2 && labels_ptr[ne_pt_idx] < 0) {
+                                labels_ptr[ne_pt_idx] = l_idx;
+                                neighbors.emplace_back(ne_pt);
+                                modes_range_[l_idx] += ne_pt_luv;
+                                modes_pos_[l_idx] += ne_pt;
+                                modes_size_[l_idx]++;
+                            }
+                        }
+                    }
+                }
+                modes_range_[l_idx] /= modes_size_[l_idx];
+                modes_pos_[l_idx] /= modes_size_[l_idx];
+            }
+        }
+    }
+    num_segms_ = ++l_idx;
+}
+
+float MeanShift::dist3D2(const cv::Point3f &x, const cv::Point3f &y) {
+    cv::Point3f dist = x-y;
+    return dist.dot(dist);
+}
+
+Image MeanShift::getSegmentedImage() const {
+    if (segmented_.empty()) {
+        cerr << "Segmented image is not generated, please run segment first" << endl;
+        return Image();
+    }
+    return segmented_;
+}
+
+cv::Vec3b MeanShift::randomColor() const{
+    cv::Vec3b color;
+    color[0] = (uchar) rand();
+    color[1] = (uchar) rand();
+    color[2] = (uchar) rand();
+    return color;
+}
+
+Image MeanShift::getRandomColorImage() const {
+    int height = labels_.rows;
+    int width = labels_.cols;
+    cv::Mat cv_random = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
+    cv::Vec3b *colors = new cv::Vec3b[num_segms_];
+    for (int i = 0; i < num_segms_; i++)
+        colors[i] = randomColor();
+
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            cv_random.at<cv::Vec3b>(i,j) = colors[labels_.at<int>(i,j)];
+        }
+    }
+    Image random(cv_random, image_.getName() + "_random_color");
+    return random;
+}
+
+
