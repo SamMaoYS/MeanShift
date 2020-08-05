@@ -9,7 +9,7 @@ int main(int argc, char** argv) {
         Image img = images.at(i);
         img.show(true, false);
 
-        MeanShift mean_shift(img, 8, 16);
+        MeanShift mean_shift(img);
         mean_shift.segment();
 
         std::cout << "Num Segments: " << mean_shift.getNumSegments() << std::endl;

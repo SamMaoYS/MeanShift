@@ -10,29 +10,43 @@
 
 class MeanShift {
 public:
-    MeanShift() = default;
-    MeanShift(const Image& img, float hs, float hr);
-    ~MeanShift() = default;
+    MeanShift();
+    MeanShift(const Image& img, float hs = 8, float hr = 16, int min_size = 100);
+    ~MeanShift();
 
     void filter();
-    void segment(float thresh_r = NAN);
+    void segment();
 
     void setImage(const Image& img);
     void setSpatialBandwidth(float hs);
     void setRangeBandwidth(float hr);
+    void setMinSize(int min_size);
 
     Image getFilteredImage() const;
     Image getSegmentedImage() const;
     Image getRandomColorImage() const;
     inline int getNumSegments() const {return num_segms_;}
 protected:
-    enum Status{SUCCESS, FAIL_IMAGE, FAIL_HS, FAIL_HR};
+    enum Status{SUCCESS, FAIL_IMAGE, FAIL_HS, FAIL_HR, FAIL_MIN_SIZE};
     int configure();
     void filterRGB();
-    void cluster(float thresh_r);
+    void cluster();
+    void merge();
+    void mergeRange();
+    void mergeMinSize();
 
+    void genSegmentedImage();
     float dist3D2(const cv::Point3f &x, const cv::Point3f &y);
     cv::Vec3b randomColor() const;
+
+    template<typename T>
+    void initMerge(T *&adj_nodes, T *&adj_pool);
+
+    template<typename T>
+    int getParent(T* adj_nodes, int idx);
+
+    template<typename T>
+    void reLabel(T *adj_nodes);
 private:
     // copy of input image
     Image image_;
@@ -44,6 +58,7 @@ private:
     float hs_;
     // range bandwidth
     float hr_;
+    int min_size_;
 
     cv::Mat l_filtered_;
     cv::Mat u_filtered_;

@@ -9,10 +9,70 @@
 
 using namespace std;
 
-MeanShift::MeanShift(const Image &img, float hs, float hr) {
+class AdjNodesImpl {
+public:
+    AdjNodesImpl();
+    ~AdjNodesImpl() = default;
+
+    int label;
+    AdjNodesImpl* next;
+    bool insert(AdjNodesImpl* node);
+
+private:
+    AdjNodesImpl* cur_;
+    AdjNodesImpl* prev_;
+    bool exist_;
+};
+
+AdjNodesImpl::AdjNodesImpl() {
+    label = -1;
+    next = nullptr;
+}
+
+bool AdjNodesImpl::insert(AdjNodesImpl *node) {
+    if (!next) {
+        next = node;
+        node->next = nullptr;
+        return true;
+    }
+
+    if (next->label > node->label) {
+        node->next = next;
+        next = node;
+        return true;
+    }
+
+    cur_ = next;
+    while (cur_) {
+        if (node->label == cur_->label)
+            return false;
+        else if (cur_->next == nullptr || cur_->next->label > node->label) {
+            node->next = next;
+            next = node;
+            break;
+        }
+        cur_ = cur_->next;
+    }
+    return true;
+}
+
+typedef AdjNodesImpl AdjNodes;
+
+MeanShift::MeanShift() {
+    this->setSpatialBandwidth(8);
+    this->setRangeBandwidth(8);
+    this->setMinSize(20);
+}
+
+MeanShift::MeanShift(const Image &img, float hs, float hr, int min_size) {
     this->image_ = img.copy();
     this->setSpatialBandwidth(hs);
     this->setRangeBandwidth(hr);
+    this->setMinSize(min_size);
+}
+
+MeanShift::~MeanShift() {
+
 }
 
 void MeanShift::setImage(const Image &img) {
@@ -39,6 +99,14 @@ void MeanShift::setRangeBandwidth(float hr) {
     hr_ = hr;
 }
 
+void MeanShift::setMinSize(int min_size) {
+    if (min_size <= 0) {
+        cerr << "Input minimum size should be positive" << endl;
+        return;
+    }
+    min_size_ = min_size;
+}
+
 void MeanShift::filter() {
     utils::processPrint("Mean Shift Filter Starts");
 
@@ -49,7 +117,7 @@ void MeanShift::filter() {
     cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
 }
 
-void MeanShift::segment(float thresh_r) {
+void MeanShift::segment() {
     utils::processPrint("Mean Shift Segment Starts");
 
     if (configure() != SUCCESS)
@@ -57,34 +125,12 @@ void MeanShift::segment(float thresh_r) {
 
     if (filtered_.empty()) {
         filterRGB();
+        cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
     }
 
-    if (isnan(thresh_r))
-        thresh_r = hr_;
-
-    cluster(thresh_r);
-    cout << "Filtered image " << filtered_.getName() << filtered_.getExtension() << " was generated" << endl;
-
-    int height = labels_.rows;
-    int width = labels_.cols;
-    cv::Mat segmented = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
-    for (int i = 0; i < height; ++i) {
-        for (int j = 0; j < width; ++j) {
-            cv::Point3f luv= modes_range_[labels_.at<int>(i,j)];
-            cv::Vec3b luv_8U;
-            luv_8U[0] = (uchar)luv.x;
-            luv_8U[1] = (uchar)luv.y;
-            luv_8U[2] = (uchar)luv.z;
-            segmented.at<cv::Vec3b>(i,j) = luv_8U;
-        }
-    }
-    cv::cvtColor(segmented, segmented, cv::COLOR_Luv2BGR);
-    if (image_.channels() == 1)
-        cv::cvtColor(segmented, segmented, cv::COLOR_BGR2GRAY);
-    segmented_.setImage(segmented);
-    segmented_.setName(image_.getName() + "_segmented");
-    cout << "Segmented image " << segmented_.getName() << segmented_.getExtension() << " was generated" << endl;
-    segmented.release();
+    cluster();
+    merge();
+    genSegmentedImage();
 }
 
 int MeanShift::configure() {
@@ -99,6 +145,10 @@ int MeanShift::configure() {
     if (hr_ <= 0) {
         cerr << "Input range bandwidth should be positive" << endl;
         return FAIL_HR;
+    }
+    if (min_size_ <= 0) {
+        cerr << "Input minimum size should be positive" << endl;
+        return FAIL_MIN_SIZE;
     }
     return SUCCESS;
 }
@@ -130,6 +180,7 @@ void MeanShift::filterRGB() {
     uchar * u_ptr = luv[1].ptr();
     uchar * v_ptr = luv[2].ptr();
 
+#pragma omp parallel for collapse(2)
     for (int i = 0; i < height; ++i) {
         for (int j = 0; j < width; ++j) {
             int pt_idx = i*width+j;
@@ -240,14 +291,14 @@ Image MeanShift::getFilteredImage() const {
     return filtered_;
 }
 
-void MeanShift::cluster(float thresh_r) {
+void MeanShift::cluster() {
     int height = image_.height();
     int width = image_.width();
 
     num_segms_ = 0;
     int l_idx = -1;
 
-    float rad_r2 = 3*thresh_r*thresh_r;
+    float rad_r2 = 3*hr_*hr_;
 
     cv::Mat real_l = l_filtered_.clone();
     real_l.convertTo(real_l, CV_32F);
@@ -264,6 +315,7 @@ void MeanShift::cluster(float thresh_r) {
 
     labels_ = cv::Mat(height, width, CV_32S, cv::Scalar::all(-1));
     int* labels_ptr = labels_.ptr<int>();
+
     for (int i = 0; i < height; ++i) {
         for (int j = 0; j < width; ++j) {
             int pt_idx = i*width+j;
@@ -321,6 +373,32 @@ Image MeanShift::getSegmentedImage() const {
     return segmented_;
 }
 
+void MeanShift::genSegmentedImage() {
+    int height = image_.height();
+    int width = image_.width();
+    cv::Mat segmented = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
+
+#pragma omp parallel for collapse(2)
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            cv::Point3f luv= modes_range_[labels_.at<int>(i,j)];
+            cv::Vec3b luv_8U;
+            luv_8U[0] = (uchar)luv.x;
+            luv_8U[1] = (uchar)luv.y;
+            luv_8U[2] = (uchar)luv.z;
+            segmented.at<cv::Vec3b>(i,j) = luv_8U;
+        }
+    }
+
+    cv::cvtColor(segmented, segmented, cv::COLOR_Luv2BGR);
+    if (image_.channels() == 1)
+        cv::cvtColor(segmented, segmented, cv::COLOR_BGR2GRAY);
+    segmented_.setImage(segmented);
+    segmented_.setName(image_.getName() + "_segmented");
+    cout << "Segmented image " << segmented_.getName() << segmented_.getExtension() << " was generated" << endl;
+    segmented.release();
+}
+
 cv::Vec3b MeanShift::randomColor() const{
     cv::Vec3b color;
     color[0] = (uchar) rand();
@@ -330,20 +408,224 @@ cv::Vec3b MeanShift::randomColor() const{
 }
 
 Image MeanShift::getRandomColorImage() const {
-    int height = labels_.rows;
-    int width = labels_.cols;
+    int height = image_.height();
+    int width = image_.width();
     cv::Mat cv_random = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
     cv::Vec3b *colors = new cv::Vec3b[num_segms_];
+
+#pragma omp parallel for
     for (int i = 0; i < num_segms_; i++)
         colors[i] = randomColor();
 
+#pragma omp parallel for collapse(2)
     for (int i = 0; i < height; ++i) {
         for (int j = 0; j < width; ++j) {
             cv_random.at<cv::Vec3b>(i,j) = colors[labels_.at<int>(i,j)];
         }
     }
+
     Image random(cv_random, image_.getName() + "_random_color");
     return random;
+}
+
+void MeanShift::merge() {
+    mergeRange();
+    mergeMinSize();
+}
+
+template<typename T>
+int MeanShift::getParent(T *adj_nodes, int idx) {
+    while (adj_nodes[idx].label != idx) idx = adj_nodes[idx].label;
+    return idx;
+}
+
+template<typename T>
+void MeanShift::initMerge(T *&adj_nodes, T *&adj_pool) {
+    int height = image_.height();
+    int width = image_.width();
+
+    adj_nodes = new AdjNodes[num_segms_];
+    int adj_pool_size = num_segms_*10;
+    adj_pool = new AdjNodes[adj_pool_size];
+
+#pragma omp parallel for
+    for (int i = 0; i < num_segms_; ++i) {
+        adj_nodes[i].label = i;
+        adj_nodes[i].next = nullptr;
+    }
+
+#pragma omp parallel for
+    for (int i = 0; i < adj_pool_size-1; ++i)
+        adj_pool[i].next = &adj_pool[i+1];
+    adj_pool[adj_pool_size-1].next = nullptr;
+    AdjNodes *node1, *node2, *free_nodes_old, *free_nodes;
+    free_nodes = adj_pool;
+
+    int *labels_ptr = labels_.ptr<int>();
+    auto connect_nodes = [&](const int &idx1, const int &idx2) {
+        node1 = free_nodes;
+        if (node1 == nullptr) return;
+        node2 = free_nodes->next;
+        free_nodes_old = free_nodes;
+        free_nodes = free_nodes->next->next;
+        node1->label = labels_ptr[idx1];
+        node2->label = labels_ptr[idx2];
+        if (adj_nodes[node1->label].insert(node2))
+            adj_nodes[node2->label].insert(node1);
+        else
+            free_nodes = free_nodes_old;
+    };
+
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            int pt_idx = i*width + j;
+            int top_idx = pt_idx - width;
+            int left_idx = pt_idx - 1;
+            if (i > 0 && labels_ptr[pt_idx] != labels_ptr[top_idx])
+                connect_nodes(pt_idx, top_idx);
+            if (j > 0 && labels_ptr[pt_idx] != labels_ptr[left_idx])
+                connect_nodes(pt_idx, left_idx);
+        }
+    }
+}
+
+void MeanShift::mergeRange() {
+    float rad_r2 = 3*hr_*hr_;
+
+    int num_segms_old = num_segms_;
+    for (int iter = 0, delta = 1; iter < 5 && delta > 0; ++iter) {
+        AdjNodes *adj_nodes, *adj_pool;
+
+        initMerge<AdjNodes>(adj_nodes, adj_pool);
+
+        if (!adj_nodes || !adj_pool) {
+            cerr << "Bad Memory allocation during merge" << endl;
+            return;
+        }
+
+        for (int i = 0; i < num_segms_; ++i) {
+            AdjNodes *neighbor = adj_nodes[i].next;
+            while (neighbor) {
+                if (dist3D2(modes_range_[i], modes_range_[neighbor->label]) < rad_r2) {
+                    int ref_merge = getParent<AdjNodes>(adj_nodes, i);
+                    int ne_merge = getParent<AdjNodes>(adj_nodes, neighbor->label);
+                    if (ref_merge < ne_merge)
+                        adj_nodes[ne_merge].label = ref_merge;
+                    else
+                        adj_nodes[ref_merge].label = ne_merge;
+                }
+                neighbor = neighbor->next;
+            }
+        }
+
+        reLabel<AdjNodes>(adj_nodes);
+
+        delete adj_nodes;
+        delete adj_pool;
+        delta = num_segms_old - num_segms_;
+        num_segms_old = num_segms_;
+    }
+}
+
+void MeanShift::mergeMinSize() {
+    int min_count;
+    do {
+        min_count = 0;
+        AdjNodes *adj_nodes, *adj_pool;
+
+        initMerge<AdjNodes>(adj_nodes, adj_pool);
+
+        if (!adj_nodes || !adj_pool) {
+            cerr << "Bad Memory allocation during merge" << endl;
+            return;
+        }
+
+        for (int i = 0; i < num_segms_; ++i) {
+            if (modes_size_[i] < min_size_) {
+                ++min_count;
+                AdjNodes *neighbor = adj_nodes[i].next;
+                if (neighbor == nullptr) {
+                    min_count = 0;
+                    continue;
+                }
+                int ne_merge = neighbor->label;
+                float min_dist = dist3D2(modes_range_[i], modes_range_[ne_merge]);
+                neighbor = neighbor->next;
+                while (neighbor) {
+                    float tmp = dist3D2(modes_range_[i], modes_range_[neighbor->label]);
+                    if (tmp < min_dist) {
+                        min_dist = tmp;
+                        ne_merge = neighbor->label;
+                    }
+                    neighbor = neighbor->next;
+                }
+
+                int ref_merge = getParent<AdjNodes>(adj_nodes, i);
+                ne_merge = getParent<AdjNodes>(adj_nodes, ne_merge);
+                if (ref_merge < ne_merge)
+                    adj_nodes[ne_merge].label = ref_merge;
+                else
+                    adj_nodes[ref_merge].label = ne_merge;
+            }
+        }
+
+        reLabel<AdjNodes>(adj_nodes);
+
+        delete adj_nodes;
+        delete adj_pool;
+    } while (min_count > 0);
+}
+
+template<typename T>
+void MeanShift::reLabel(T *adj_nodes) {
+    int height = image_.height();
+    int width = image_.width();
+
+    for (int i = 0; i < num_segms_; ++i) {
+        int ref_merge = getParent<AdjNodes>(adj_nodes, i);
+        adj_nodes[i].label = ref_merge;
+    }
+
+    int *modes_size_buffer = new int[num_segms_]();
+    cv::Point3f *modes_range_buffer = new cv::Point3f[num_segms_];
+    cv::Point2i *modes_pos_buffer = new cv::Point2i[num_segms_];
+    int *labels_buffer = new int[num_segms_];
+    fill(modes_range_buffer, modes_range_buffer+num_segms_, cv::Point3f(0));
+    fill(modes_pos_buffer, modes_pos_buffer+num_segms_, cv::Point2i(0));
+    fill(labels_buffer, labels_buffer+num_segms_, -1);
+
+    for (int i = 0; i < num_segms_; ++i) {
+        int ref_merge = adj_nodes[i].label;
+        modes_size_buffer[ref_merge] += modes_size_[i];
+        modes_range_buffer[ref_merge] += modes_range_[i]*modes_size_[i];
+        modes_pos_buffer[ref_merge] += modes_pos_[i]*modes_size_[i];
+    }
+    int l_idx = -1;
+    for (int i = 0; i < num_segms_; ++i) {
+        int ref_merge = adj_nodes[i].label;
+        if (labels_buffer[ref_merge] < 0) {
+            labels_buffer[ref_merge] = ++l_idx;
+            if (modes_size_buffer[ref_merge] == 0)
+                continue;
+            modes_range_[l_idx] = modes_range_buffer[ref_merge]/modes_size_buffer[ref_merge];
+            modes_pos_[l_idx] = modes_pos_buffer[ref_merge]/modes_size_buffer[ref_merge];
+            modes_size_[l_idx] = modes_size_buffer[ref_merge];
+        }
+    }
+    num_segms_ = ++l_idx;
+
+    int *labels_ptr = labels_.ptr<int>();
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            int pt_idx = i*width + j;
+            labels_ptr[pt_idx] = labels_buffer[adj_nodes[labels_ptr[pt_idx]].label];
+        }
+    }
+
+    delete [] modes_range_buffer;
+    delete [] modes_pos_buffer;
+    delete [] modes_size_buffer;
+    delete [] labels_buffer;
 }
 
 
