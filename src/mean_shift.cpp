@@ -187,7 +187,6 @@ void MeanShift::filterRGB() {
     u_filtered_.create(height, width, CV_8U);
     v_filtered_.create(height, width, CV_8U);
 
-    int rad_s2 = (int)(hs_*hs_);
     float rad_r2 = hr_*hr_;
 
     uchar * l_ptr = luv[0].ptr();
@@ -201,16 +200,16 @@ void MeanShift::filterRGB() {
     for (int i = 0; i < height; ++i) {
         for (int j = 0; j < width; ++j) {
             int pt_idx = i*width+j;
-            cv::Point2f xy_old(j, i);
-            cv::Point3f luv_old((float)l_ptr[pt_idx], (float)u_ptr[pt_idx], (float)v_ptr[pt_idx]);
-            cv::Point2f xy_new(0);
-            cv::Point3f luv_new(0);
+            float x_old = j, y_old = i;
+            float l_old = (float)l_ptr[pt_idx], u_old = (float)u_ptr[pt_idx], v_old = (float)v_ptr[pt_idx];
+            float x_new = 0, y_new = 0;
+            float l_new = 0, u_new = 0, v_new = 0;
             float shift = FLT_MAX;
 
             int iter = 0;
             while (iter < max_iter_ && shift > min_shift_) {
-                xy_new = cv::Point2f(0);
-                luv_new= cv::Point3f(0);
+                x_new = 0, y_new = 0;
+                l_new = 0, u_new = 0, v_new = 0;
                 float c1 = 0;
                 float c2 = 0;
 
@@ -221,13 +220,15 @@ void MeanShift::filterRGB() {
                 for (int y = y_start; y < y_end; ++y) {
                     for (int x = x_start; x < x_end; ++x) {
                         int pt_win_idx = y*width+x;
-                        cv::Point3f luv_win(l_ptr[pt_win_idx], u_ptr[pt_win_idx], v_ptr[pt_win_idx]);
-                        float dr = dist3D2(luv_win, luv_old);
+                        float l_win = l_ptr[pt_win_idx], u_win = u_ptr[pt_win_idx], v_win = v_ptr[pt_win_idx];
+                        float dl = l_win-l_old, du = u_win-u_old, dv = v_win-v_old;
+                        float dr = dl*dl + du*du + dv*dv;
                         if (dr <= rad_r2) {
+                            float dr_sqrt = sqrt(dr);
                             float g1 = hs_kernel.at<float>(x-x_start, y-y_start);
-                            float g2 = hr_kernel.at<float>(sqrt(dr), sqrt(dr));
-                            xy_new += g1*cv::Point2f(x, y);
-                            luv_new += g2*luv_win;
+                            float g2 = hr_kernel.at<float>(dr_sqrt, dr_sqrt);
+                            x_new += g1*x, y_new +=g1*y;
+                            l_new += g2*l_win, u_new += g2*u_win, v_new += g2*v_win;
                             c1 += g1;
                             c2 += g2;
                         }
@@ -237,18 +238,18 @@ void MeanShift::filterRGB() {
                     iter++;
                     continue;
                 }
-                xy_new /= c1;
-                luv_new /= c2;
-                cv::Point2f d_xy = xy_new - xy_old;
-                cv::Point3f d_luv = luv_new - luv_old;
-                shift = d_xy.dot(d_xy)+d_luv.dot(d_luv);
-                xy_old = xy_new;
-                luv_old = luv_new;
+                x_new /= c1, y_new /= c1;
+                l_new /= c2, u_new /= c2, v_new /= c2;
+                float dx = x_new - x_old, dy = y_new - y_old;
+                float dl = l_new - l_old, du = u_new - u_old, dv = v_new - v_old;
+                shift = dx*dx + dy*dy + dl*dl + du*du + dv*dv;
+                x_old = x_new, y_old = y_new;
+                l_old = l_new, u_old = u_new, v_old = v_new;
                 iter++;
             }
-            l_filtered_.ptr<uchar>()[pt_idx] = (uchar)luv_old.x;
-            u_filtered_.ptr<uchar>()[pt_idx] = (uchar)luv_old.y;
-            v_filtered_.ptr<uchar>()[pt_idx] = (uchar)luv_old.z;
+            l_filtered_.ptr<uchar>()[pt_idx] = (uchar)l_old;
+            u_filtered_.ptr<uchar>()[pt_idx] = (uchar)u_old;
+            v_filtered_.ptr<uchar>()[pt_idx] = (uchar)v_old;
         }
     }
     luv.clear();
@@ -346,7 +347,7 @@ void MeanShift::cluster() {
 
 float MeanShift::dist3D2(const cv::Point3f &x, const cv::Point3f &y) {
     cv::Point3f dist = x-y;
-    return dist.dot(dist);
+    return (dist.x*dist.x +dist.y*dist.y + dist.z*dist.z);
 }
 
 Image MeanShift::getSegmentedImage() const {
