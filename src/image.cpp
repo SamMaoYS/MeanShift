@@ -3,6 +3,7 @@
 //
 
 #include "image.h"
+#include <opencv2/imgproc.hpp>
 
 using namespace std;
 
@@ -60,6 +61,14 @@ void Image::show(bool pause, bool destroy) {
     }
     if (destroy)
         cv::destroyWindow(name_);
+}
+
+void Image::resize(float scale) {
+    if (scale <= 0) {
+        cerr << "Input resize scale should be positive" << endl;
+        return;
+    }
+    cv::resize(img_, img_, cv::Size(), scale, scale);
 }
 
 Images::~Images() {
