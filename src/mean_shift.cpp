@@ -200,7 +200,7 @@ void MeanShift::filterRGB() {
     for (int i = 0; i < height; ++i) {
         for (int j = 0; j < width; ++j) {
             int pt_idx = i*width+j;
-            float x_old = j, y_old = i;
+            float x_old = (float)j, y_old = (float)i;
             float l_old = (float)l_ptr[pt_idx], u_old = (float)u_ptr[pt_idx], v_old = (float)v_ptr[pt_idx];
             float x_new = 0, y_new = 0;
             float l_new = 0, u_new = 0, v_new = 0;
@@ -210,23 +210,20 @@ void MeanShift::filterRGB() {
             while (iter < max_iter_ && shift > min_shift_) {
                 x_new = 0, y_new = 0;
                 l_new = 0, u_new = 0, v_new = 0;
-                float c1 = 0;
-                float c2 = 0;
+                float c1 = 0, c2 = 0;
 
-                int x_start = max(0, j-(int)hs_);
-                int x_end = min(width, j+(int)hs_+1);
-                int y_start = max(0, i-(int)hs_);
-                int y_end = min(height, i+(int)hs_+1);
+                int x_start = max(0, j-(int)hs_), x_end = min(width, j+(int)hs_+1);
+                int y_start = max(0, i-(int)hs_), y_end = min(height, i+(int)hs_+1);
                 for (int y = y_start; y < y_end; ++y) {
                     for (int x = x_start; x < x_end; ++x) {
                         int pt_win_idx = y*width+x;
                         float l_win = l_ptr[pt_win_idx], u_win = u_ptr[pt_win_idx], v_win = v_ptr[pt_win_idx];
                         float dl = l_win-l_old, du = u_win-u_old, dv = v_win-v_old;
-                        float dr = dl*dl + du*du + dv*dv;
-                        if (dr <= rad_r2) {
-                            float dr_sqrt = sqrt(dr);
+                        float dr2 = dl*dl + du*du + dv*dv;
+                        if (dr2 <= rad_r2) {
+                            float dr = sqrt(dr2);
                             float g1 = hs_kernel.at<float>(x-x_start, y-y_start);
-                            float g2 = hr_kernel.at<float>(dr_sqrt, dr_sqrt);
+                            float g2 = hr_kernel.at<float>(dr, dr);
                             x_new += g1*x, y_new +=g1*y;
                             l_new += g2*l_win, u_new += g2*u_win, v_new += g2*v_win;
                             c1 += g1;
@@ -347,7 +344,7 @@ void MeanShift::cluster() {
 
 float MeanShift::dist3D2(const cv::Point3f &x, const cv::Point3f &y) {
     cv::Point3f dist = x-y;
-    return (dist.x*dist.x +dist.y*dist.y + dist.z*dist.z);
+    return dist.dot(dist);
 }
 
 Image MeanShift::getSegmentedImage() const {
