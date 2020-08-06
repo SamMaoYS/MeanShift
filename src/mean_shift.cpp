@@ -145,6 +145,7 @@ void MeanShift::segment() {
     modes_range_.resize(num_segms_);
     modes_pos_.resize(num_segms_);
     modes_size_.resize(num_segms_);
+    cout << "Segment process ends" << endl;
 }
 
 int MeanShift::configure() {

@@ -106,6 +106,8 @@ void io::loadMultiImages(const string &dir, Images &images, const int flag, cons
     else if (status == FAIL_DIR){
         cerr << "The directory " << file_paths[0] << " doesn't exist" << endl;
     }
+
+    cout << "Load multiple images ends" << endl;
 }
 
 Image io::loadImage(const string &dir, const int flag) {
@@ -130,5 +132,42 @@ Image io::loadImage(const string &dir, const int flag) {
         }
     }
 
+    cout << "Load image ends" << endl;
     return image;
+}
+
+void io::saveMultiImages(const Images &imgs, const std::string &dir) {
+    utils::processPrint("Save Multiple Images Starts");
+
+    fs::path path(dir);
+    if (!IoImpl::pathExists(path)) {
+        cerr << "Cannot find the directory: " << dir << endl;
+        return;
+    }
+
+    string save_dir = path.string();
+    if (path.extension() != "") {
+        cerr << "Input directory is not to a folder, save images in the parent folder" << endl;
+        save_dir = path.parent_path();
+    }
+
+    if (path.filename().string() == ".")
+        save_dir = path.parent_path();
+
+    for (int i = 0; i < imgs.size(); ++i) {
+        Image tmp = imgs.at(i);
+        cv::imwrite(save_dir+"/"+tmp.getName()+tmp.getExtension(), tmp.getCVImage());
+    }
+
+    cout << "Save multiple images ends" << endl;
+}
+
+void io::saveImage(const Image &img, const std::string &dir) {
+    utils::processPrint("Save Image Starts");
+
+    Images images("temp");
+    images.addImage(img);
+    saveMultiImages(images, dir);
+
+    cout << "Save image ends" << endl;
 }

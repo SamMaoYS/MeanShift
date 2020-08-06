@@ -35,6 +35,8 @@ public:
     inline int channels() const {return img_.channels();}
     void show(bool pause = true, bool destroy = false);
 
+    void resize(float scale);
+
 private:
     cv::Mat img_;
     std::string name_;
