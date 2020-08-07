@@ -64,6 +64,7 @@ MeanShift::MeanShift() {
     this->setMinSize(100);
     this->setIterationThresholds(100, 1);
     this->setMergeMaxAdjacent(10);
+    this->setLargeAreaThresholds(1500, 1500);
 }
 
 MeanShift::MeanShift(const Image &img, float hs, float hr, int min_size) {
@@ -73,6 +74,7 @@ MeanShift::MeanShift(const Image &img, float hs, float hr, int min_size) {
     this->setMinSize(min_size);
     this->setIterationThresholds(100, 1);
     this->setMergeMaxAdjacent(10);
+    this->setLargeAreaThresholds(1500, 1500);
 }
 
 MeanShift::~MeanShift() {
@@ -119,30 +121,58 @@ void MeanShift::setMinSize(int min_size) {
     min_size_ = min_size;
 }
 
-void MeanShift::filter() {
+void MeanShift::setLargeAreaThresholds(float height, float width) {
+    if (height <= 0 || width <=0) {
+        cerr << "Input large area thresholds should be positive" << endl;
+        return;
+    }
+    max_eigen_val1_ = height;
+    max_eigen_val2_ = width;
+}
+
+void MeanShift::filter(int mode) {
     utils::processPrint("Mean Shift Filter Starts");
 
+    mode_ = mode;
     if (configure() != SUCCESS)
         return;
 
-    filterRGB();
+    if (mode_ == MODE_RGB)
+        filterRGB();
+    else if (mode_ == MODE_DEPTH) {
+        filterDepth();
+    }
+
     cout << "Filter process ends" << endl;
 }
 
-void MeanShift::segment() {
+void MeanShift::segment(int mode) {
     utils::processPrint("Mean Shift Segment Starts");
 
+    mode_ = mode;
     if (configure() != SUCCESS)
         return;
 
     if (filtered_.empty()) {
-        filterRGB();
+        if (mode_ == MODE_RGB)
+            filterRGB();
+        else if (mode_ == MODE_DEPTH) {
+            filterDepth();
+        }
         cout << "Filter process ends" << endl;
     }
 
-    cluster();
-    merge();
-    modes_range_.resize(num_segms_);
+    if (mode_ == MODE_RGB) {
+        clusterRGB();
+        mergeRGB();
+        modes_range_.resize(num_segms_);
+    }
+    else if (mode_ == MODE_DEPTH) {
+        clusterDepth();
+        mergeDepth();
+        modes_depth_.resize(num_segms_);
+    }
+
     modes_pos_.resize(num_segms_);
     modes_size_.resize(num_segms_);
     cout << "Segment process ends" << endl;
@@ -164,6 +194,10 @@ int MeanShift::configure() {
     if (min_size_ <= 0) {
         cerr << "Input minimum size should be positive" << endl;
         return FAIL_MIN_SIZE;
+    }
+    if (mode_ != MODE_RGB && mode_ != MODE_DEPTH && mode_ != MODE_NORMAL) {
+        cerr << "Input mode is invalid" << endl;
+        return FAIL_MODE;
     }
     return SUCCESS;
 }
@@ -274,7 +308,7 @@ Image MeanShift::getFilteredImage() const {
     return filtered_;
 }
 
-void MeanShift::cluster() {
+void MeanShift::clusterRGB() {
     int height = image_.height();
     int width = image_.width();
 
@@ -306,7 +340,7 @@ void MeanShift::cluster() {
             if (labels_ptr[pt_idx] < 0) {
                 labels_ptr[pt_idx] = ++l_idx;
 
-                cv::Point2i  ref_pt(i, j);
+                cv::Point2i ref_pt(i, j);
                 cv::Point3f pt_luv(l_ptr[pt_idx], u_ptr[pt_idx], v_ptr[pt_idx]);
                 modes_range_.emplace_back(pt_luv);
                 modes_pos_.emplace_back(ref_pt);
@@ -348,7 +382,20 @@ float MeanShift::dist3D2(const cv::Point3f &x, const cv::Point3f &y) {
     return dist.dot(dist);
 }
 
+float MeanShift::dist1D2(float x, float y) {
+    float dist = x-y;
+    return dist*dist;
+}
+
 Image MeanShift::getSegmentedImage() const {
+    if (mode_ == MODE_RGB)
+        return getSegmentedRGB();
+    else if (mode_ == MODE_DEPTH)
+        return getSegmentedDepth();
+    return Image();
+}
+
+Image MeanShift::getSegmentedRGB() const {
     int height = image_.height();
     int width = image_.width();
     cv::Mat segmented_cv = cv::Mat(height, width, CV_8UC3, cv::Scalar::all(0));
@@ -368,6 +415,25 @@ Image MeanShift::getSegmentedImage() const {
     cv::cvtColor(segmented_cv, segmented_cv, cv::COLOR_Luv2BGR);
     if (image_.channels() == 1)
         cv::cvtColor(segmented_cv, segmented_cv, cv::COLOR_BGR2GRAY);
+    Image segmented(segmented_cv, image_.getName() + "_segmented");
+    segmented_cv.release();
+
+    return segmented;
+}
+
+Image MeanShift::getSegmentedDepth() const {
+    int height = image_.height();
+    int width = image_.width();
+    cv::Mat segmented_cv = cv::Mat(height, width, CV_16UC1, cv::Scalar::all(0));
+
+#pragma omp parallel for collapse(2)
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            float z= modes_depth_[labels_.at<int>(i,j)];
+            segmented_cv.at<uint16_t>(i,j) = (uint16_t)z;
+        }
+    }
+
     Image segmented(segmented_cv, image_.getName() + "_segmented");
     segmented_cv.release();
 
@@ -404,9 +470,9 @@ Image MeanShift::getRandomColorImage() const {
     return random;
 }
 
-void MeanShift::merge() {
-    mergeRange();
-    mergeMinSize();
+void MeanShift::mergeRGB() {
+    mergeRangeRGB();
+    mergeMinSizeRGB();
 }
 
 template<typename T>
@@ -466,7 +532,7 @@ void MeanShift::initMerge(T *&adj_nodes, T *&adj_pool) {
     }
 }
 
-void MeanShift::mergeRange() {
+void MeanShift::mergeRangeRGB() {
     float rad_r2 = hr_*hr_;
 
     int num_segms_old = num_segms_;
@@ -495,7 +561,7 @@ void MeanShift::mergeRange() {
             }
         }
 
-        reLabel<AdjNodes>(adj_nodes);
+        reLabelRGB<AdjNodes>(adj_nodes);
 
         delete adj_nodes;
         delete adj_pool;
@@ -504,7 +570,7 @@ void MeanShift::mergeRange() {
     }
 }
 
-void MeanShift::mergeMinSize() {
+void MeanShift::mergeMinSizeRGB() {
     int min_count;
     do {
         min_count = 0;
@@ -546,7 +612,7 @@ void MeanShift::mergeMinSize() {
             }
         }
 
-        reLabel<AdjNodes>(adj_nodes);
+        reLabelRGB<AdjNodes>(adj_nodes);
 
         delete adj_nodes;
         delete adj_pool;
@@ -554,7 +620,7 @@ void MeanShift::mergeMinSize() {
 }
 
 template<typename T>
-void MeanShift::reLabel(T *adj_nodes) {
+void MeanShift::reLabelRGB(T *adj_nodes) {
     int height = image_.height();
     int width = image_.width();
 
@@ -619,6 +685,10 @@ Images MeanShift::getResultImages(uint8_t code) const {
     if (code & OUT_MASK) {
         results.addImages(getMaskImages());
     }
+    if (code & OUT_LA) {
+        results.addImages(getLargeAreaMasks());
+    }
+
     return results;
 }
 
@@ -687,5 +757,343 @@ cv::Mat MeanShift::gaussianKernel(int size) {
 
     return kernel;
 }
+
+void MeanShift::filterDepth() {
+    int height = image_.height();
+    int width = image_.width();
+    int channels = image_.channels();
+
+    cv::Mat range = image_.getCVImage();
+    if (channels != 1) {
+        cerr << "Depth image should only have one channel" << endl;
+        return;
+    }
+
+    if (range.type() != CV_16U)
+        range.convertTo(range, CV_16U);
+
+    z_filtered_.create(height, width, CV_16UC1);
+
+    float rad_r2 = hr_*hr_;
+
+    uint16_t * z_ptr = range.ptr<uint16_t>();
+
+    cv::Mat hs_kernel = gaussianKernel((int)(2*hs_+1));
+    cv::Mat hr_kernel = gaussianKernel((int)(2*hr_+1));
+
+#pragma omp parallel for collapse(2)
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            int pt_idx = i*width+j;
+            float x_old = (float)j, y_old = (float)i;
+            float z_old = (float)z_ptr[pt_idx];
+            float x_new = 0, y_new = 0;
+            float z_new = 0;
+            float shift = FLT_MAX;
+
+            int iter = 0;
+            while (iter < max_iter_ && shift > min_shift_) {
+                x_new = 0, y_new = 0;
+                z_new = 0;
+                float c1 = 0, c2 = 0;
+
+                int x_start = max(0, j-(int)hs_), x_end = min(width, j+(int)hs_+1);
+                int y_start = max(0, i-(int)hs_), y_end = min(height, i+(int)hs_+1);
+                for (int y = y_start; y < y_end; ++y) {
+                    for (int x = x_start; x < x_end; ++x) {
+                        int pt_win_idx = y*width+x;
+                        float z_win = z_ptr[pt_win_idx];
+                        float dr2 = dist1D2(z_win, z_old);
+                        if (dr2 <= rad_r2) {
+                            float dr = sqrt(dr2);
+                            float g1 = hs_kernel.at<float>(x-x_start, y-y_start);
+                            float g2 = hr_kernel.at<float>(dr, dr);
+                            x_new += g1*x, y_new +=g1*y;
+                            z_new += g2*z_win;
+                            c1 += g1;
+                            c2 += g2;
+                        }
+                    }
+                }
+                if (c1 <= std::numeric_limits<float>::min() || c2 <= std::numeric_limits<float>::min()) {
+                    iter++;
+                    continue;
+                }
+                x_new /= c1, y_new /= c1;
+                z_new /= c2;
+                float dx = x_new - x_old, dy = y_new - y_old;
+                float dz = z_new - z_old;
+                shift = dx*dx + dy*dy + dz*dz;
+                x_old = x_new, y_old = y_new;
+                z_old = z_new;
+                iter++;
+            }
+            z_filtered_.ptr<uint16_t>()[pt_idx] = (uint16_t)z_old;
+        }
+    }
+
+    filtered_.setImage(z_filtered_);
+    filtered_.setName(image_.getName()+"_filtered");
+}
+
+void MeanShift::clusterDepth() {
+    int height = image_.height();
+    int width = image_.width();
+
+    num_segms_ = 0;
+    int l_idx = -1;
+
+    float rad_r2 = hr_*hr_;
+
+    cv::Mat real_z = z_filtered_.clone();
+    real_z.convertTo(real_z, CV_32F);
+
+    float * z_ptr = real_z.ptr<float>();
+
+    const cv::Point2i eight_connect[8] = {cv::Point2i(-1, -1), cv::Point2i(-1, 0), cv::Point2i(-1, 1), cv::Point2i(0, -1), cv::Point2i(0, 1), cv::Point2i(1, -1), cv::Point2i(1, 0), cv::Point2i(1, 1)};
+
+    labels_ = cv::Mat(height, width, CV_32S, cv::Scalar::all(-1));
+    int* labels_ptr = labels_.ptr<int>();
+
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            int pt_idx = i*width+j;
+
+            if (labels_ptr[pt_idx] < 0) {
+                labels_ptr[pt_idx] = ++l_idx;
+
+                cv::Point2i ref_pt(i, j);
+                float pt_z = z_ptr[pt_idx];
+                modes_depth_.emplace_back(pt_z);
+                modes_pos_.emplace_back(ref_pt);
+                modes_size_.push_back(1);
+
+                vector<cv::Point2i> neighbors;
+                neighbors.emplace_back(ref_pt);
+
+                while (!neighbors.empty()) {
+                    cv::Point2i cur_pt = neighbors.back();
+                    neighbors.pop_back();
+
+                    for (int k = 0; k < 8; ++k) {
+                        cv::Point2i ne_pt = cur_pt + eight_connect[k];
+                        if (ne_pt.x >= 0 && ne_pt.y >= 0 && ne_pt.x < height && ne_pt.y < width) {
+                            int ne_pt_idx = ne_pt.x*width + ne_pt.y;
+                            float ne_pt_z = z_ptr[ne_pt_idx];
+                            float dr2 = (pt_z - ne_pt_z)*(pt_z - ne_pt_z);
+                            if (dr2 < rad_r2 && labels_ptr[ne_pt_idx] < 0) {
+                                labels_ptr[ne_pt_idx] = l_idx;
+                                neighbors.emplace_back(ne_pt);
+                                modes_depth_[l_idx] += ne_pt_z;
+                                modes_pos_[l_idx] += ne_pt;
+                                modes_size_[l_idx]++;
+                            }
+                        }
+                    }
+                }
+                modes_depth_[l_idx] /= modes_size_[l_idx];
+                modes_pos_[l_idx] /= modes_size_[l_idx];
+            }
+        }
+    }
+    num_segms_ = ++l_idx;
+}
+
+void MeanShift::mergeDepth() {
+    mergeRangeDepth();
+    mergeMinSizeDepth();
+}
+
+void MeanShift::mergeRangeDepth() {
+    float rad_r2 = hr_*hr_;
+
+    int num_segms_old = num_segms_;
+    for (int iter = 0, delta = 1; iter < 5 && delta > 0; ++iter) {
+        AdjNodes *adj_nodes, *adj_pool;
+
+        initMerge<AdjNodes>(adj_nodes, adj_pool);
+
+        if (!adj_nodes || !adj_pool) {
+            cerr << "Bad Memory allocation during merge" << endl;
+            return;
+        }
+
+        for (int i = 0; i < num_segms_; ++i) {
+            AdjNodes *neighbor = adj_nodes[i].next;
+            while (neighbor) {
+                if (dist1D2(modes_depth_[i], modes_depth_[neighbor->label]) < rad_r2) {
+                    int ref_merge = getParent<AdjNodes>(adj_nodes, i);
+                    int ne_merge = getParent<AdjNodes>(adj_nodes, neighbor->label);
+                    if (ref_merge < ne_merge)
+                        adj_nodes[ne_merge].label = ref_merge;
+                    else
+                        adj_nodes[ref_merge].label = ne_merge;
+                }
+                neighbor = neighbor->next;
+            }
+        }
+
+        reLabelDepth<AdjNodes>(adj_nodes);
+
+        delete adj_nodes;
+        delete adj_pool;
+        delta = num_segms_old - num_segms_;
+        num_segms_old = num_segms_;
+    }
+}
+
+void MeanShift::mergeMinSizeDepth() {
+    int min_count;
+    do {
+        min_count = 0;
+        AdjNodes *adj_nodes, *adj_pool;
+
+        initMerge<AdjNodes>(adj_nodes, adj_pool);
+
+        if (!adj_nodes || !adj_pool) {
+            cerr << "Bad Memory allocation during merge" << endl;
+            return;
+        }
+
+        for (int i = 0; i < num_segms_; ++i) {
+            if (modes_size_[i] < min_size_) {
+                ++min_count;
+                AdjNodes *neighbor = adj_nodes[i].next;
+                if (neighbor == nullptr) {
+                    min_count = 0;
+                    continue;
+                }
+                int ne_merge = neighbor->label;
+                float min_dist = dist1D2(modes_depth_[i], modes_depth_[ne_merge]);
+                neighbor = neighbor->next;
+                while (neighbor) {
+                    float tmp = dist1D2(modes_depth_[i], modes_depth_[neighbor->label]);
+                    if (tmp < min_dist) {
+                        min_dist = tmp;
+                        ne_merge = neighbor->label;
+                    }
+                    neighbor = neighbor->next;
+                }
+
+                int ref_merge = getParent<AdjNodes>(adj_nodes, i);
+                ne_merge = getParent<AdjNodes>(adj_nodes, ne_merge);
+                if (ref_merge < ne_merge)
+                    adj_nodes[ne_merge].label = ref_merge;
+                else
+                    adj_nodes[ref_merge].label = ne_merge;
+            }
+        }
+
+        reLabelDepth<AdjNodes>(adj_nodes);
+
+        delete adj_nodes;
+        delete adj_pool;
+    } while (min_count > 0);
+}
+
+template<typename T>
+void MeanShift::reLabelDepth(T *adj_nodes) {
+    int height = image_.height();
+    int width = image_.width();
+
+    for (int i = 0; i < num_segms_; ++i) {
+        int ref_merge = getParent<AdjNodes>(adj_nodes, i);
+        adj_nodes[i].label = ref_merge;
+    }
+
+    int *modes_size_buffer = new int[num_segms_]();
+    float *modes_depth_buffer = new float[num_segms_];
+    cv::Point2i *modes_pos_buffer = new cv::Point2i[num_segms_];
+    int *labels_buffer = new int[num_segms_];
+    fill(modes_depth_buffer, modes_depth_buffer+num_segms_, 0.0f);
+    fill(modes_pos_buffer, modes_pos_buffer+num_segms_, cv::Point2i(0));
+    fill(labels_buffer, labels_buffer+num_segms_, -1);
+
+    for (int i = 0; i < num_segms_; ++i) {
+        int ref_merge = adj_nodes[i].label;
+        modes_size_buffer[ref_merge] += modes_size_[i];
+        modes_depth_buffer[ref_merge] += modes_depth_[i]*modes_size_[i];
+        modes_pos_buffer[ref_merge] += modes_pos_[i]*modes_size_[i];
+    }
+    int l_idx = -1;
+    for (int i = 0; i < num_segms_; ++i) {
+        int ref_merge = adj_nodes[i].label;
+        if (labels_buffer[ref_merge] < 0) {
+            labels_buffer[ref_merge] = ++l_idx;
+            if (modes_size_buffer[ref_merge] == 0)
+                continue;
+            modes_depth_[l_idx] = modes_depth_buffer[ref_merge]/modes_size_buffer[ref_merge];
+            modes_pos_[l_idx] = modes_pos_buffer[ref_merge]/modes_size_buffer[ref_merge];
+            modes_size_[l_idx] = modes_size_buffer[ref_merge];
+        }
+    }
+    num_segms_ = ++l_idx;
+
+    int *labels_ptr = labels_.ptr<int>();
+    for (int i = 0; i < height; ++i) {
+        for (int j = 0; j < width; ++j) {
+            int pt_idx = i*width + j;
+            labels_ptr[pt_idx] = labels_buffer[adj_nodes[labels_ptr[pt_idx]].label];
+        }
+    }
+
+    delete [] modes_depth_buffer;
+    delete [] modes_pos_buffer;
+    delete [] modes_size_buffer;
+    delete [] labels_buffer;
+}
+
+Images MeanShift::getLargeAreaMasks() const {
+    Images masks(image_.getName() + "large_areas");
+    int height = image_.height();
+    int width = image_.width();
+
+#pragma omp parallel for
+    for (int i = 0; i < num_segms_; ++i) {
+        cv::Mat mask(height, width, CV_8U, cv::Scalar::all(0));
+        mask.setTo(0, labels_ != i);
+        mask.setTo(255, labels_ == i);
+
+        cv::Mat locations;   // output, locations of non-zero pixels
+        cv::findNonZero(mask, locations);
+        std::vector<cv::Vec2d> eigen_vecs;
+        std::vector<double> eigen_val;
+        cv::Point center_pt;
+
+        computePCA(locations, eigen_vecs, eigen_val, center_pt);
+
+        if (eigen_val[0] > max_eigen_val1_ || eigen_val[1] > max_eigen_val2_) {
+#pragma omp critical
+            {
+                masks.addImage(Image(mask, image_.getName() + "_mask" + to_string(i)));
+                cout << "max_eigen_val1 " << eigen_val[0] << endl;
+                cout << "max_eigen_val2 " << eigen_val[1] << endl;
+            }
+        }
+    }
+    return masks;
+}
+
+void MeanShift::computePCA(const cv::Mat &locations, vector<cv::Vec2d> &eigen_vecs, vector<double> &eigen_val,
+                      cv::Point &center_pt) const {
+    int size = locations.rows;
+    cv::Mat pt_data(size, 2, CV_64FC1);
+    for (int i = 0; i < size; ++i) {
+        pt_data.at<double>(i, 0) = (double)locations.at<cv::Point>(i).x;
+        pt_data.at<double>(i, 1) = (double)locations.at<cv::Point>(i).y;
+    }
+    cv::PCA pca_analysis(pt_data, cv::Mat(), cv::PCA::DATA_AS_ROW);
+    center_pt = cv::Point(static_cast<int>(pca_analysis.mean.at<double>(0, 0)),
+                          static_cast<int>(pca_analysis.mean.at<double>(0, 1)));
+
+    eigen_vecs.resize(2);
+    eigen_val.resize(2);
+    for (int i = 0; i < 2; ++i) {
+        eigen_vecs[i] = cv::Vec2d(pca_analysis.eigenvectors.at<double>(i, 0),
+                                  pca_analysis.eigenvectors.at<double>(i, 1));
+        eigen_val[i] = pca_analysis.eigenvalues.at<double>(i, 0);
+    }
+}
+
 
 

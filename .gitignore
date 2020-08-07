@@ -2,3 +2,6 @@
 build/
 cmake-build-debug/
 *.jpg
+data/rgb/
+data/depth/
+data/result/

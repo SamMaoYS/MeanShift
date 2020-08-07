@@ -54,7 +54,26 @@ void Image::show(bool pause, bool destroy) {
     }
 
     cv::namedWindow(name_, cv::WINDOW_AUTOSIZE);
-    cv::imshow(name_, img_);
+
+    int type = img_.type();
+    if (type == CV_8UC3 || type == CV_8U) {
+        cv::imshow(name_, img_);
+    }
+    else {
+        cv::Mat result;
+        cv::Mat depth_8U, mask, depth_8UC3;
+        double min, max;
+        cv::minMaxLoc(img_, &min, &max);
+        float scale = 255.0 / (max - min);
+        img_.convertTo(depth_8U, CV_8UC1, scale, -min * scale);
+        cv::threshold(depth_8U, mask, 1, 255, cv::THRESH_BINARY);
+        mask.convertTo(mask, CV_8UC3);
+        cv::applyColorMap(depth_8U, depth_8UC3, cv::COLORMAP_JET);
+        cv::bitwise_and(depth_8UC3, depth_8UC3, result, mask);
+        cv::resize(result, result, cv::Size(640, 480));
+        cv::imshow(name_, result);
+    }
+
     if (pause) {
         // continue until esc key is pressed
         while (cv::waitKey(0) != 27);
